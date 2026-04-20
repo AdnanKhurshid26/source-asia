@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 interface RequestResult {
-  id: number;
+  id: string;
   timestamp: string;
   status: number;
   allowed: boolean;
@@ -27,14 +27,17 @@ interface Stats {
   }>;
 }
 
+let requestCounter = 0;
+
 export default function Home() {
   const [userId, setUserId] = useState("test-user");
   const [results, setResults] = useState<RequestResult[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(false);
+  const burstInProgress = useRef(false);
 
-  const sendRequest = useCallback(async () => {
-    const id = Date.now();
+  const sendSingleRequest = useCallback(async (): Promise<RequestResult> => {
+    const id = `req-${++requestCounter}`;
     try {
       const res = await fetch("/api/request", {
         method: "POST",
@@ -42,41 +45,46 @@ export default function Home() {
         body: JSON.stringify({ user_id: userId, payload: { test: true } }),
       });
       const data = await res.json();
-      setResults((prev) => [
-        {
-          id,
-          timestamp: new Date().toLocaleTimeString(),
-          status: res.status,
-          allowed: res.status === 200,
-          remaining: data.rateLimit?.remaining ?? data.currentRequests,
-          message: data.message || data.error,
-        },
-        ...prev.slice(0, 19),
-      ]);
-    } catch (err) {
-      setResults((prev) => [
-        {
-          id,
-          timestamp: new Date().toLocaleTimeString(),
-          status: 500,
-          allowed: false,
-          message: "Network error",
-        },
-        ...prev.slice(0, 19),
-      ]);
+      return {
+        id,
+        timestamp: new Date().toLocaleTimeString(),
+        status: res.status,
+        allowed: res.status === 200,
+        remaining: data.rateLimit?.remaining ?? data.currentRequests,
+        message: data.message || data.error,
+      };
+    } catch {
+      return {
+        id,
+        timestamp: new Date().toLocaleTimeString(),
+        status: 500,
+        allowed: false,
+        message: "Network error",
+      };
     }
   }, [userId]);
 
+  const sendRequest = useCallback(async () => {
+    const result = await sendSingleRequest();
+    setResults((prev) => [result, ...prev.slice(0, 19)]);
+  }, [sendSingleRequest]);
+
   const sendBurst = useCallback(
     async (count: number) => {
+      if (burstInProgress.current) return;
+      burstInProgress.current = true;
       setLoading(true);
+
       const promises = Array(count)
         .fill(null)
-        .map(() => sendRequest());
-      await Promise.all(promises);
+        .map(() => sendSingleRequest());
+      const newResults = await Promise.all(promises);
+
+      setResults((prev) => [...newResults, ...prev].slice(0, 20));
       setLoading(false);
+      burstInProgress.current = false;
     },
-    [sendRequest],
+    [sendSingleRequest],
   );
 
   const fetchStats = useCallback(async () => {
