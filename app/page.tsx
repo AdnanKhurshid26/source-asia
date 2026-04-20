@@ -1,65 +1,257 @@
-import Image from "next/image";
+"use client";
+
+import { useCallback, useState } from "react";
+
+interface RequestResult {
+  id: number;
+  timestamp: string;
+  status: number;
+  allowed: boolean;
+  remaining?: number;
+  message?: string;
+}
+
+interface Stats {
+  config: { maxRequestsPerWindow: number; windowSeconds: number };
+  summary: {
+    totalUsers: number;
+    totalRequests: number;
+    totalBlocked: number;
+  };
+  users: Array<{
+    userId: string;
+    requestsInCurrentWindow: number;
+    totalRequests: number;
+    blockedRequests: number;
+    remainingRequests: number;
+  }>;
+}
 
 export default function Home() {
+  const [userId, setUserId] = useState("test-user");
+  const [results, setResults] = useState<RequestResult[]>([]);
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const sendRequest = useCallback(async () => {
+    const id = Date.now();
+    try {
+      const res = await fetch("/api/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, payload: { test: true } }),
+      });
+      const data = await res.json();
+      setResults((prev) => [
+        {
+          id,
+          timestamp: new Date().toLocaleTimeString(),
+          status: res.status,
+          allowed: res.status === 200,
+          remaining: data.rateLimit?.remaining ?? data.currentRequests,
+          message: data.message || data.error,
+        },
+        ...prev.slice(0, 19),
+      ]);
+    } catch (err) {
+      setResults((prev) => [
+        {
+          id,
+          timestamp: new Date().toLocaleTimeString(),
+          status: 500,
+          allowed: false,
+          message: "Network error",
+        },
+        ...prev.slice(0, 19),
+      ]);
+    }
+  }, [userId]);
+
+  const sendBurst = useCallback(
+    async (count: number) => {
+      setLoading(true);
+      const promises = Array(count)
+        .fill(null)
+        .map(() => sendRequest());
+      await Promise.all(promises);
+      setLoading(false);
+    },
+    [sendRequest],
+  );
+
+  const fetchStats = useCallback(async () => {
+    const res = await fetch("/api/stats");
+    const data = await res.json();
+    setStats(data);
+  }, []);
+
+  const clearResults = () => setResults([]);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-8 font-mono">
+      <div className="max-w-4xl mx-auto">
+        <h1 className="text-2xl font-bold mb-2">Rate Limiter Test Dashboard</h1>
+        <p className="text-zinc-400 mb-8">
+          5 requests per user per minute (sliding window)
+        </p>
+
+        {/* Controls */}
+        <div className="bg-zinc-900 rounded-lg p-6 mb-6">
+          <div className="flex flex-wrap gap-4 items-end">
+            <div>
+              <label className="block text-sm text-zinc-400 mb-1">
+                User ID
+              </label>
+              <input
+                type="text"
+                value={userId}
+                onChange={(e) => setUserId(e.target.value)}
+                className="bg-zinc-800 border border-zinc-700 rounded px-3 py-2 w-48"
+              />
+            </div>
+            <button
+              onClick={sendRequest}
+              className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded font-medium"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              Send 1 Request
+            </button>
+            <button
+              onClick={() => sendBurst(3)}
+              disabled={loading}
+              className="bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded font-medium disabled:opacity-50"
             >
-              Learning
-            </a>{" "}
-            center.
+              Send 3 Concurrent
+            </button>
+            <button
+              onClick={() => sendBurst(7)}
+              disabled={loading}
+              className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded font-medium disabled:opacity-50"
+            >
+              Send 7 (Trigger Limit)
+            </button>
+            <button
+              onClick={fetchStats}
+              className="bg-zinc-700 hover:bg-zinc-600 px-4 py-2 rounded font-medium"
+            >
+              Refresh Stats
+            </button>
+            <button
+              onClick={clearResults}
+              className="bg-zinc-800 hover:bg-zinc-700 px-4 py-2 rounded font-medium"
+            >
+              Clear Log
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Request Log */}
+          <div className="bg-zinc-900 rounded-lg p-6">
+            <h2 className="text-lg font-semibold mb-4">Request Log</h2>
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {results.length === 0 ? (
+                <p className="text-zinc-500">No requests yet</p>
+              ) : (
+                results.map((r) => (
+                  <div
+                    key={r.id}
+                    className={`p-3 rounded text-sm ${
+                      r.allowed
+                        ? "bg-green-900/30 border border-green-800"
+                        : "bg-red-900/30 border border-red-800"
+                    }`}
+                  >
+                    <div className="flex justify-between">
+                      <span className="font-medium">
+                        {r.allowed ? "✓ ALLOWED" : "✗ BLOCKED"}
+                      </span>
+                      <span className="text-zinc-400">{r.timestamp}</span>
+                    </div>
+                    <div className="text-zinc-400 mt-1">
+                      Status: {r.status} |{" "}
+                      {r.allowed
+                        ? `Remaining: ${r.remaining}`
+                        : `Retry after window`}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Stats */}
+          <div className="bg-zinc-900 rounded-lg p-6">
+            <h2 className="text-lg font-semibold mb-4">Server Stats</h2>
+            {!stats ? (
+              <p className="text-zinc-500">
+                Click &quot;Refresh Stats&quot; to load
+              </p>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-zinc-800 p-3 rounded">
+                    <div className="text-2xl font-bold">
+                      {stats.summary.totalRequests}
+                    </div>
+                    <div className="text-zinc-400 text-sm">Total Requests</div>
+                  </div>
+                  <div className="bg-zinc-800 p-3 rounded">
+                    <div className="text-2xl font-bold text-red-400">
+                      {stats.summary.totalBlocked}
+                    </div>
+                    <div className="text-zinc-400 text-sm">Blocked</div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-sm font-medium text-zinc-400 mb-2">
+                    Users ({stats.summary.totalUsers})
+                  </h3>
+                  <div className="space-y-2">
+                    {stats.users.map((u) => (
+                      <div key={u.userId} className="bg-zinc-800 p-3 rounded">
+                        <div className="font-medium">{u.userId}</div>
+                        <div className="text-sm text-zinc-400">
+                          Window: {u.requestsInCurrentWindow}/5 | Total:{" "}
+                          {u.totalRequests} | Blocked: {u.blockedRequests}
+                        </div>
+                        <div className="mt-2 h-2 bg-zinc-700 rounded overflow-hidden">
+                          <div
+                            className={`h-full ${
+                              u.requestsInCurrentWindow >= 5
+                                ? "bg-red-500"
+                                : "bg-green-500"
+                            }`}
+                            style={{
+                              width: `${(u.requestsInCurrentWindow / 5) * 100}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Instructions */}
+        <div className="mt-8 text-zinc-500 text-sm">
+          <p>
+            <strong>Test scenarios:</strong>
           </p>
+          <ul className="list-disc ml-5 mt-2 space-y-1">
+            <li>Send 5 requests → all should pass</li>
+            <li>Send 6th request → should be blocked (429)</li>
+            <li>Wait 60 seconds → oldest request expires, new ones allowed</li>
+            <li>Change User ID → fresh rate limit for new user</li>
+            <li>
+              Send 7 concurrent → tests atomicity (exactly 5 pass, 2 blocked)
+            </li>
+          </ul>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+      </div>
     </div>
   );
 }
